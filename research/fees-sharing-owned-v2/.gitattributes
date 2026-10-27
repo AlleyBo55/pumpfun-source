@@ -1,0 +1,3 @@
+sources/control/programs/pump-fees/src/lib.rs -whitespace
+sources/origins/programs/pump-fees/src/lib.rs -whitespace
+sources/negative_*/programs/pump-fees/src/lib.rs -whitespace

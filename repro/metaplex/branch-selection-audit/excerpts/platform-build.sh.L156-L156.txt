@@ -1,0 +1,1 @@
+tar -C deploy -jcf ${ARTIFACT} .

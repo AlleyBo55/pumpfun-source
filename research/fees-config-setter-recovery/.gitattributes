@@ -1,0 +1,5 @@
+sources/** -text
+*.so.gz binary
+sources/negative/programs/pump-fees/src/lib.rs -whitespace
+sources/setters/programs/pump-fees/src/lib.rs -whitespace
+sources/origins/programs/pump-fees/src/lib.rs -whitespace

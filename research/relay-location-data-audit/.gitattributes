@@ -1,0 +1,2 @@
+# Unified patch context is exact evidence, including blank context lines.
+patches/*.patch -whitespace

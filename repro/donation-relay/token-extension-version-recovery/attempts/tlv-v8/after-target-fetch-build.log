@@ -1,0 +1,4 @@
+error: failed to download `spl-token-confidential-transfer-proof-generation v0.4.0`
+
+Caused by:
+  attempting to make an HTTP request, but --offline was specified

@@ -1,6 +1,6 @@
 # SDK sweep and creator-update object coverage
 
-The [authenticated source expansion](../repro/sdk/sweep-setcreator-source-20261026/REPORT.md) binds eight more of the original dynamic account-object sites: four AMM fee sweeps supply all 12 IDL fields, two Pump curve sweeps supply nine of 13, and two conditional AMM creator-update sites supply one or three of five. The exact earlier eight site IDs and new eight are disjoint; nine of the original 25 remain unexpanded. This counts symbolic object bindings within the existing builder inventory, not instructions or runtime compatibility.
+The [authenticated source expansion](../repro/sdk/sweep-setcreator-source-20261026/REPORT.md) binds eight more of the original dynamic account-object sites: four AMM fee sweeps supply all 12 IDL fields, two Pump curve sweeps supply nine of 13, and two conditional AMM creator-update sites supply one or three of five. The exact earlier eight site IDs and new eight are disjoint; nine of the original 25 were left for the separate source review below. This counts symbolic object bindings within the existing builder inventory, not instructions or runtime compatibility.
 
 The [independent source and portability review](../repro/sdk/sweep-setcreator-source-independent-review-20261026/REPORT.md) confirms helper argument substitutions, complete object expressions, IDL ordering/flags/omissions and the conditional creator branches. Fresh relocation passed with exact-case paths and no stale workspace reads. Source seal: `ee143e26fcf33efee56fb421e6a2e604baa029ae4e51b07c7b170d1c74f19052`. Review seal: `d3a2cddb74cb5d1d3a2a86c77fe175e1a6d093d367b737486f992bdccc847e9c`.
 
@@ -20,4 +20,15 @@ Runtime review seal: `cec59238fb6f08abd74358642b771544da59d9e6e2a393220bec4e5d55
 python3 -B repro/sdk/sweep-setcreator-runtime-20261026/verify.py --expected-seal cec59238fb6f08abd74358642b771544da59d9e6e2a393220bec4e5d552c2ebb
 ```
 
-The portable checker executes standard-library Python on bundled observations and reads compiled JavaScript as inert evidence. It does not rerun SDKs, import native crypto utilities, sign transactions or contact RPC. The synthetic client inputs do not establish valid real pool/mint/token/metadata state, recipient membership, account extension, target execution or arbitrary resolver compatibility. Nine dynamic object sites remain unexpanded. Source/compiler/dependency identity and whole-byte identity remain open; core whole-file identity is still 0/4. Active program source, selected artifacts, status, workflows and historical packets are unchanged.
+The portable checker executes standard-library Python on bundled observations and reads compiled JavaScript as inert evidence. It does not rerun SDKs, import native crypto utilities, sign transactions or contact RPC. The synthetic client inputs do not establish valid real pool/mint/token/metadata state, recipient membership, account extension, target execution or arbitrary resolver compatibility. The separate source review below symbolically maps the remaining nine; it adds no runtime acceptance. Source/compiler/dependency identity and whole-byte identity remain open; core whole-file identity is still 0/4. Active program source, selected artifacts, status, workflows and historical packets are unchanged.
+
+
+## Remaining nine trade objects: source-only mapping
+
+The [authenticated source packet](../repro/sdk/trade-v2-v3-nine-source-20261026/REPORT.md) maps the nine remaining sites: six AMM tradeV2 objects provide all 17 IDL fields through accountsStrict; three Pump tradeV3 objects provide 10 of 17 through accountsPartial. Seven omitted fields retain their exact IDL address/PDA/relations recipes; Anchor resolution was not executed. This completes symbolic coverage of the original 25-site inventory only.
+
+The packet retains two authenticated published SDK archives, 21 exact source/IDL members, complete ordered account flags and source expressions, raw numeric argument mapping, quote/fee rounding, slippage quantization and unresolved authentic state inputs. The [independent source review](../repro/sdk/trade-v2-v3-nine-independent-review-20261026/FINDINGS.md) checks all nine objects and 132 supplied fields, plus the critical arithmetic and recipient branches.
+
+Source seal: `4bcd0ca9d8cb69a219d48d4098cab37556c7899c5ce447df8e55312db019de9e`. Independent review seal: `ea98378c78954bf86c9640030cdde9d8867181311f5c1a2a32b60856a1f78382`. Replay with `python3 -B repro/sdk/trade-v2-v3-nine-source-20261026/verify.py`.
+
+No JavaScript, BN arithmetic, Anchor resolver, provider, signing, compiler or VM ran. Earlier runtime observations do not transfer to these nine sites. Authentic account state, transaction effects, transfer-fee/extension behavior, partial fills, arbitrary resolver compatibility and historical program source remain unproved. No stopped runtime lane is resumed; selected artifacts and whole-byte identity remain unchanged.

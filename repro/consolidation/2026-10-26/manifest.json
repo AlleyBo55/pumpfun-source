@@ -1,0 +1,16 @@
+{
+  "files": {
+    "README.md": {
+      "sha256": "e45495b29465d676d0a468364c89aa11fa8a88809e711638f6c69b5e9ac0a0e1",
+      "bytes": 1879
+    },
+    "guard.py": {
+      "sha256": "c55d11651347611e10ac61ce577b97d87ee527621b2b4964fa88c13da5eb31b4",
+      "bytes": 3744
+    },
+    "transition.json": {
+      "sha256": "dd72c4c56dc9c19c94b23c105e2906f0f340a7bae9cd7f778c5874371ae2524e",
+      "bytes": 1471
+    }
+  }
+}

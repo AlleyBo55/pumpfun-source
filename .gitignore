@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 
 **/target/
+.DS_Store

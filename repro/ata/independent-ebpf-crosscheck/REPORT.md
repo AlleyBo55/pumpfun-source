@@ -88,3 +88,102 @@ fallback is /tmp/ghidra_text_dump.tsv if REA_DUMP_OUT is unset). The example set
 REA_DUMP_OUT explicitly. No Ghidra invocation is automatically performed by the
 runner. The manifest hashes the corrected source/manual docs and the unchanged
 saved receipts; it authenticates file bytes, not absent execution evidence.
+
+## Independent byte-distance: the 307 residual, re-derived
+
+`byte_distance.py` re-measures the ATA residual directly from the two program
+images using only `hashlib`: no disassembler, no symbols, and no dependency on
+any other script in this package. It diffs `original.so` against the closest
+candidate `candidate2.so` and localizes every differing offset. The candidate
+pair lives under `repro/ata/monomorph-order-proof/`, which is sparse-excluded by
+default; materialize it with `git sparse-checkout add
+repro/ata/monomorph-order-proof` before running.
+
+The tool asserts the recorded values below and exits non-zero on any drift, so
+it also serves as a regression guard for the residual:
+
+```
+ATA original  6804554e69fd3a58  105032 B
+ATA candidate ba8dd8a42ca7bff4  105032 B
+total differing bytes: 307 (common-extent 307, length delta 0)
+contiguous diff runs:  126, first at offset 28601
+inside windows [28592, 29384]: 282  (AccountMeta 181, u8 101)
+outside windows (call/reloc fixups): 25
+```
+
+Scope and limits. The byte counts, the 282/25 split across the two preset
+windows already named by `verify_ata_order.py`, and the first differing offset
+(28601) are reproducible facts about these specific `original.so` and
+`candidate2.so` files. The attribution of the in-window bytes to swapped
+`RawVec::reserve_for_push` monomorphizations is carried in the tool's
+`interpretation` field as the author's reading; this measurement does not
+independently establish it. The tool compares only this one candidate pair. It
+does not search other candidates, recover function boundaries, prove the
+element-type attribution, or prove that whole-byte identity is unreachable.
+
+Review note (2026-10-26): an earlier version of the `interpretation` field also
+read the residual as "not closable without the historical Cargo unit-graph
+inputs". Later packages contradict that reading:
+[`../reconstructed-order/`](../reconstructed-order/README.md) (a linker
+symbol-ordering file that swaps only this pair) and
+[`../synthetic-ordering-exact-build/`](../synthetic-ordering-exact-build/REPORT.md)
+(an empty, code-free Cargo feature that changes `-C metadata`) both build
+f5ce86 to the exact raw deployed bytes. Both use a non-historical ordering input,
+so the historical recipe is still unknown. The `interpretation` field and
+`byte_distance_report.json` were updated to match; the measured values did not
+change.
+
+Usage:
+
+```bash
+python3 byte_distance.py            # assert the recorded ATA pair (read-only)
+python3 byte_distance.py --json     # same result, machine-readable to stdout
+python3 byte_distance.py A.so B.so  # measure an arbitrary pair (descriptive only)
+```
+
+The committed `byte_distance_report.json` is the saved receipt of the asserting
+run (`python3 byte_distance.py --json`, byte-for-byte); the tools in this package
+do not overwrite it.
+
+## Controlled experiment: Darwin build host (negative result)
+
+Every retained ATA candidate was compiled on an `x86_64-unknown-linux-gnu` host.
+Cargo at the commit shipped in bpf-tools v1.27 (`49d8809d`,
+`compilation_files.rs::hash_rustc_version`) hashes the `rustc -vV` host triple
+into every unit's `-C metadata` for a `-dev` compiler, and the release asset was
+uploaded twelve minutes before its source tree was committed, consistent with a
+local maintainer build. One pre-registered, single-input experiment was therefore
+run: the same source revision, lockfile, SDK release and compiler commits, with
+only the host changed to `x86_64-apple-darwin`. Hypothesis, inputs, build log,
+toolchain identity, output binary and an offline verifier are retained in
+[darwin-host-experiment/](darwin-host-experiment/REPORT.md).
+
+```
+candidate2 (Linux host)   differing positions vs deployed:  307
+darwin build              differing positions vs deployed: 3288  (vs candidate2: 2981)
+darwin diffs by section: .text 3267, .rel.dyn 21; .rodata and section layout identical
+pair order: deployed AccountMeta->u8 | candidate2 u8->AccountMeta | darwin u8->AccountMeta
+```
+
+The hypothesis is rejected. Changing the host re-hashed every crate's metadata
+and re-ordered dozens of functions (1,314 of 1,438 call-masked 64-byte `.text`
+chunks stay at the same offset; the instruction multiset differs by nine
+address-bearing instructions per side), while the deployed program differs from
+the Linux candidate by a single function pair. This rejects the tested pinned Darwin recipe as an exact reproduction, but one
+negative build cannot exclude all Darwin contexts or all global metadata inputs.
+Hash-based ordering can preserve relative order. The historical host and missing
+metadata inputs remain unresolved; a single-crate perturbation is a hypothesis,
+not a uniquely established explanation.
+
+Reading the v1.10.33 `cargo-test-bpf` source additionally excludes the upstream
+CI invocation as that input without a build: it passes `--features test-bpf`
+only to the subsequent host `cargo test`, never to the `cargo-build-bpf` step,
+so its `.so` output is identical to a plain `cargo build-bpf`.
+
+Scope and limits. This is one build on one host with every other input pinned;
+it does not reduce the 307-position residual, recover the historical recipe, or
+authorize a flag, version or path sweep. The lockfile hash was unchanged by the
+build. The `bpf` rustup link and `~/.cache/solana` directory created by
+`cargo-build-bpf` were removed afterwards; no global toolchain was modified.
+`darwin-host-experiment/verify.py` is standard-library only, offline, and
+asserts every number above from the retained binaries.

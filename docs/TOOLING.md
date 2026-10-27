@@ -49,6 +49,31 @@ python3 scripts/disassemble.py --objdump /path/to/platform-tools/llvm/bin/llvm-o
 This records the tool hash, version, input hashes and output hashes. The output
 is original-derived disassembly for analysis, never a rebuilt executable.
 
+`scripts/disassemble.py` is pinned by SHA-256 in saved checkpoints and the P27
+guard, so it stays unchanged. It does not check that the listing covers the
+input. For new captures, use the byte-checked generator
+`research/disassembly-coverage/disassemble_checked.py`, which takes the same
+arguments. It verifies every executable file-section byte against the listing,
+requires contiguous decimal eight-byte SBF instruction slots, and accounts for
+sixteen-byte LDDW rows. Empty, truncated, byte-mutated, misaddressed, unknown or
+unparsed executable rows prevent a success manifest. Input and tool hashes are
+rechecked after capture. Repository-relative binary arguments keep LLVM's listing
+preamble independent of the checkout's absolute path. Historical manifests remain
+unchanged.
+
+To independently check a canonical LLVM SBF listing:
+
+```sh
+python3 research/disassembly-coverage/verify_disassembly.py \
+  evidence/original/pump/deployed.so work/disassembly-new/pump.asm
+python3 research/disassembly-coverage/test_disassembly.py
+```
+
+Coverage verifies listing bytes and addressing. It does not prove mnemonic/operand
+semantics, reachable control flow, inferred function boundaries, source recovery,
+or rebuilt binary identity. The [v1.44 checkpoint](../repro/disassembly/2026-10-26-v144/README.md)
+records complete executable-byte coverage for all four captured core programs.
+
 ## Compare an independently compiled candidate
 
 Pinned recipes for the current partial candidates are documented in the program
@@ -60,7 +85,14 @@ python3 scripts/compare.py pump /path/to/independently-built/pump.so \
   --pad-zero-to-allocation --output work/comparison-pump
 ```
 
-Exit status is zero only for full byte equality, including the allocation suffix.
+Without `--pad-zero-to-allocation`, this is a raw whole-file gate: exit status is
+zero only when the unmodified candidate file equals the complete captured payload,
+including its allocation suffix. With the padding flag, exit status zero means only
+that the comparator-synthesized, zero-padded allocation image equals the capture.
+That is padded allocation equality, not byte identity of the compiler output (the
+unmodified candidate is shorter), and must be reported with that label. In that
+mode the top-level comparison fields describe the padded image;
+`candidate_input_sha256` still identifies the unpadded input.
 Omit the padding flag when the candidate already contains the complete allocation.
 The optional padding step appends newly allocated zeros only; it never copies data
 from the original. It first checks that the original's bytes beyond all ELF file
@@ -72,6 +104,12 @@ first difference and whether zero padding was requested. It deliberately sets
 obtained a candidate. A future release needs source/compiler manifests and a clean
 build trace in addition to this comparison. Passing the original as the candidate
 would prove nothing about source reconstruction.
+
+`scripts/compare.py` is bound by SHA-256 in saved promotion checkpoints and in the
+current P27 guard, so it stays unchanged. For a strict raw comparison that also
+lists every changed, missing and extra byte range of the two unmodified files, use
+`research/byte-diff/byte_diff.py` (see `research/byte-diff/README.md`). It never
+pads either input and exits zero only on complete raw equality.
 
 ## Local compiler inputs
 

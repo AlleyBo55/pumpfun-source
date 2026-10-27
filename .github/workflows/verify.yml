@@ -20,9 +20,9 @@ jobs:
               python scripts/test_core_linux_v144_retention.py
               python repro/pump_fees/initializer-inline-runtime/verify.py
               python scripts/verify_recovered_builds.py
-              python -B repro/layered-passes/pass-27/current-guards/verify_current.py --repo . --metadata repro/layered-passes/pass-27/current-metadata
-              python -B repro/layered-passes/pass-27/current-guards/verify_metadata.py --repo . --metadata repro/layered-passes/pass-27/current-metadata
-              python -B repro/layered-passes/pass-27/current-guards/verify_portable_crypto.py --repo . --metadata repro/layered-passes/pass-27/current-metadata --python312 python
+              python -B repro/consolidation/2026-10-26/guard.py verify_current.py --repo . --metadata repro/layered-passes/pass-27/current-metadata
+              python -B repro/consolidation/2026-10-26/guard.py verify_metadata.py --repo . --metadata repro/layered-passes/pass-27/current-metadata
+              python -B repro/consolidation/2026-10-26/guard.py verify_portable_crypto.py --repo . --metadata repro/layered-passes/pass-27/current-metadata --python312 python
               python -B repro/layered-passes/pass-19/ci-followup/verify.py --repo .
               python -B repro/pump/wide-runtime-attribution/verify.py --repo .
               python scripts/pump_verify_dependencies.py
