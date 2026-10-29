@@ -28,7 +28,8 @@ const PERIOD_SECONDS: Record<Period, number> = { daily: 86_400, weekly: 604_800,
 
 /**
  * Fixed window anchor so `windowStartSec` is deterministic across calls and
- * hosts. Chosen as 2026-10-01T00:00:00Z; the window start snaps the anchor down
+ * hosts. Chosen as 2025-10-01T00:00:00Z, just after the seed's latest
+ * lastRefreshedAtMs (2025-09-30); the window start snaps the anchor down
  * to the period boundary.
  */
 const ANCHOR_SEC = 1_759_276_800;
