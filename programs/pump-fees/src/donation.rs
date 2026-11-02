@@ -8,39 +8,47 @@ use crate::types::FeeProgramGlobal;
 pub const RELAY: Pubkey = anchor_lang::solana_program::pubkey!("RLAYHr9TRFcKB2ubYQhspcnXiaGpaVzNQvHytt47RZu");
 pub const PUMP: Pubkey = crate::pump_global::PUMP_ID;
 pub const AMM: Pubkey = anchor_lang::solana_program::pubkey!("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
-pub fn crank(ctx: Context<CrankDonationFeePda>) -> Result<()> {
-        require!(ctx.accounts.fee_program_global.disable_flags & 8 == 0, FeeError::FeatureDeactivated);
-        let donation=ctx.accounts.donation_fee_pda.to_account_info();
-        let excess=donation.lamports().saturating_sub(Rent::get()?.minimum_balance(218));
-        let mint=ctx.accounts.quote_mint.key();
-        let base=ctx.accounts.donation_fee_pda.base_mint;
-        let config=ctx.accounts.donation_fee_pda.config_id;
-        let bump=[ctx.accounts.donation_fee_pda.bump];
-        let seeds:&[&[u8]]=&[b"donation-fee-pda",base.as_ref(),config.as_ref(),&bump];
-        if mint==anchor_spl::token::spl_token::native_mint::ID && excess>0 {
-            **donation.try_borrow_mut_lamports()? -= excess;
-            **ctx.accounts.donation_fee_pda_ata.to_account_info().try_borrow_mut_lamports()? += excess;
-            let ix=anchor_lang::solana_program::instruction::Instruction {program_id:anchor_spl::token::ID,
-                accounts:vec![AccountMeta::new(ctx.accounts.donation_fee_pda_ata.key(),false),AccountMeta::new_readonly(ctx.accounts.rent.key(),false),AccountMeta::new_readonly(donation.key(),true)],data:vec![17]};
-            anchor_lang::solana_program::program::invoke_signed(&ix,&[ctx.accounts.donation_fee_pda_ata.to_account_info(),ctx.accounts.rent.to_account_info(),donation.clone()],&[seeds])?;
-            ctx.accounts.donation_fee_pda_ata.reload()?;
-        }
-        let amount=ctx.accounts.donation_fee_pda_ata.amount;
-        if amount==0{return Ok(());}
-        let message=format!("{},{}",base,ctx.accounts.donation_fee_pda.creator);
-        let mut payload=vec![120,217,57,241,135,104,139,184];
-        payload.extend_from_slice(&amount.to_le_bytes());payload.extend_from_slice(config.as_ref());
-        payload.extend_from_slice(&0u16.to_le_bytes());message.serialize(&mut payload)?;payload.extend_from_slice(ID.as_ref());
-        let infos=[ctx.accounts.epoch_tracker.to_account_info(),ctx.accounts.debouncer.to_account_info(),ctx.accounts.debouncer_ata.to_account_info(),ctx.accounts.quote_mint.to_account_info(),ctx.accounts.donation_fee_pda_ata.to_account_info(),donation.clone(),ctx.accounts.payer.to_account_info(),ctx.accounts.mint_whitelist.to_account_info(),ctx.accounts.associated_token_program.to_account_info(),ctx.accounts.token_program.to_account_info(),ctx.accounts.system_program.to_account_info(),ctx.accounts.donation_relay_event_authority.to_account_info(),ctx.accounts.donation_relay_program.to_account_info()];
-        let metas=infos.iter().enumerate().map(|(i,a)| if i<7 {AccountMeta::new(a.key(),i==5||i==6)} else {AccountMeta::new_readonly(a.key(),false)}).collect();
-        let ix=anchor_lang::solana_program::instruction::Instruction {program_id:RELAY,accounts:metas,data:payload};
-        anchor_lang::solana_program::program::invoke_signed(&ix,&infos,&[seeds])?;
-        let state=&mut ctx.accounts.donation_fee_pda;
-        state.total_donated=state.total_donated.checked_add(amount).ok_or(error!(FeeError::ShareCalculationOverflow))?;
-        state.last_crank_ts=Clock::get()?.unix_timestamp;
-        let event=DonationFeePdaCranked {timestamp:state.last_crank_ts,signer:ctx.accounts.payer.key(),donation_fee_pda:state.key(),config_id:config,base_mint:base,quote_mint:mint,creator:state.creator,amount};
-        emit!(event);emit_cpi!(event);Ok(())
+
+pub(crate) fn sync_native_excess<'info>(donation: &AccountInfo<'info>, ata: &mut Account<'info, anchor_spl::token::TokenAccount>, rent: &UncheckedAccount<'info>) -> Result<Option<u64>> {
+    let rent_sysvar = Rent::get()?;
+    let minimum = rent_sysvar.minimum_balance(218);
+    let excess = donation.lamports().saturating_sub(minimum);
+    if excess > 0 {
+        let ata_info = ata.to_account_info();
+        donation.sub_lamports(excess)?;
+        ata_info.add_lamports(excess)?;
+        anchor_lang::solana_program::program::invoke(&anchor_lang::solana_program::instruction::Instruction {
+            program_id: anchor_spl::token::ID,
+            accounts: vec![AccountMeta::new(ata.key(), false), AccountMeta::new_readonly(rent.key(), false), AccountMeta::new(donation.key(), false)],
+            data: anchor_spl::token::spl_token::instruction::TokenInstruction::SyncNative.pack(),
+        }, &[ata.to_account_info(), rent.to_account_info(), donation.clone()])?;
+        ata.reload()?;
     }
+    let amount = ata.amount;
+    if amount == 0 {
+        msg!("Nothing to donate");
+        return Ok(None);
+    }
+    Ok(Some(amount))
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 pub fn create(ctx: Context<CreateDonationFeePda>) -> Result<()> {
         if ctx.accounts.fee_program_global.disable_flags & 4 != 0 {
             msg!("CreateDonationFeePda is currently disabled");
@@ -69,9 +77,9 @@ pub fn create(ctx: Context<CreateDonationFeePda>) -> Result<()> {
             let data=info.try_borrow_data()?;
             let pool=Pool::try_deserialize(&mut &data[..])?;
             require_keys_eq!(pool.base_mint, ctx.accounts.base_mint.key(), FeeError::InvalidPool);
-            let authority=Pubkey::find_program_address(&[b"pool-authority",ctx.accounts.base_mint.key().as_ref()],&PUMP).0;
+            let authority=Pubkey::find_program_address(&[b"pool-authority",ctx.accounts.base_mint.key().as_ref()],&crate::pump::ID).0;
             require_keys_eq!(pool.creator,authority,FeeError::InvalidPool);
-            let expected=Pubkey::create_program_address(&[b"pool",&pool.index.to_le_bytes(),pool.creator.as_ref(),pool.base_mint.as_ref(),pool.quote_mint.as_ref(),&[pool.pool_bump]],&AMM).map_err(|_| FeeError::InvalidPool)?;
+            let expected=Pubkey::create_program_address(&[b"pool",&pool.index.to_le_bytes(),pool.creator.as_ref(),pool.base_mint.as_ref(),pool.quote_mint.as_ref(),&[pool.pool_bump]],&crate::pump_amm::ID).map_err(|_| FeeError::InvalidPool)?;
             require_keys_eq!(info.key(),expected,FeeError::InvalidPool);
             (pool.coin_creator, pool.quote_mint)
         };
@@ -112,24 +120,24 @@ fn donation_raw_curve_quote(info: AccountInfo<'_>) -> Pubkey {
     Pubkey::new_from_array(quote_bytes)
 }
 
-#[derive(Accounts)]
-pub struct CreateDonationFeePda<'info> {
-    /// CHECK: event PDA validated.
-    #[account(seeds=[b"__event_authority"],bump)] pub event_authority: AccountInfo<'info>,
-    pub program: Program<'info, crate::program::PumpFeesCandidate>,
-    #[account(mut)] pub payer: Signer<'info>,
-    pub system_program: Program<'info,System>,
-    #[account(seeds=[b"fee-program-global"],bump=fee_program_global.bump)] pub fee_program_global: Account<'info,FeeProgramGlobal>,
-    #[account(init_if_needed,payer=payer,space=218,seeds=[b"donation-fee-pda",base_mint.key().as_ref(),config_id.key().as_ref()],bump)] pub donation_fee_pda: Account<'info,DonationFeePda>,
-    /// CHECK: identifier only.
-    pub config_id: UncheckedAccount<'info>,
-    pub base_mint: InterfaceAccount<'info,Mint>,
-    #[account(seeds=[b"bonding-curve",base_mint.key().as_ref()],bump,seeds::program=PUMP)] pub bonding_curve: Account<'info,BondingCurve>,
-    /// CHECK: validated in handler.
-    pub pool: UncheckedAccount<'info>,
-    /// CHECK: derived identifier; state rules under recovery.
-    #[account(seeds=[b"sharing-config",base_mint.key().as_ref()],bump)] pub sharing_config: UncheckedAccount<'info>,
-}
+pub use crate::instructions::fee_sharing::create_donation_fee_pda::*;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 pub use crate::state::DonationFeePda;
 pub use crate::pump::accounts::BondingCurve;
 pub use crate::pump_amm::accounts::Pool;
@@ -143,7 +151,7 @@ pub use crate::instructions::fee_sharing::create_fee_sharing_config::SharingConf
 #[derive(Accounts)]
 pub struct CrankDonationFeePda<'info> {
     /// CHECK: event PDA.
-    #[account(seeds=[b"__event_authority"],bump)] pub event_authority:UncheckedAccount<'info>,
+    #[account(seeds=[b"__event_authority"],bump)] pub event_authority:AccountInfo<'info>,
     pub program:Program<'info,crate::program::PumpFeesCandidate>,
     #[account(mut)]pub payer:Signer<'info>,
     pub system_program:Program<'info,System>,
@@ -153,10 +161,10 @@ pub struct CrankDonationFeePda<'info> {
     #[account(address=anchor_lang::solana_program::sysvar::rent::ID)]pub rent:UncheckedAccount<'info>,
     #[account(seeds=[b"fee-program-global"],bump=fee_program_global.bump)]pub fee_program_global:Account<'info,FeeProgramGlobal>,
     #[account(mut,seeds=[b"donation-fee-pda",donation_fee_pda.base_mint.as_ref(),donation_fee_pda.config_id.as_ref()],bump=donation_fee_pda.bump)]pub donation_fee_pda:Account<'info,DonationFeePda>,
-    #[account(mut,address=donation_fee_pda.quote_mint @ anchor_lang::error::ErrorCode::ConstraintMintTokenProgram)]pub quote_mint:Account<'info,anchor_spl::token::Mint>,
+    #[account(mut,address=donation_fee_pda.quote_mint @ anchor_lang::error::ErrorCode::ConstraintMintTokenProgram)]pub quote_mint:Box<InterfaceAccount<'info,anchor_spl::token_interface::Mint>>,
     #[account(init_if_needed,payer=payer,associated_token::mint=quote_mint,associated_token::authority=donation_fee_pda)]pub donation_fee_pda_ata:Account<'info,anchor_spl::token::TokenAccount>,
     /// CHECK: fixed executable dependency.
-    #[account(executable,address=RELAY)]pub donation_relay_program:UncheckedAccount<'info>,
+    #[account(executable,address=RELAY @ anchor_lang::error::ErrorCode::AccountOwnedByWrongProgram)]pub donation_relay_program:UncheckedAccount<'info>,
     /// CHECK: dependency enforces its constraints.
     pub donation_relay_event_authority:UncheckedAccount<'info>,
     /// CHECK: dependency enforces its constraints.
@@ -168,5 +176,34 @@ pub struct CrankDonationFeePda<'info> {
     /// CHECK: dependency enforces its constraints.
     #[account(mut)]pub debouncer_ata:UncheckedAccount<'info>,
 }
-#[event]
+#[derive(AnchorSerialize,AnchorDeserialize)]
 pub struct DonationFeePdaCranked {pub timestamp:i64,pub signer:Pubkey,pub donation_fee_pda:Pubkey,pub config_id:Pubkey,pub base_mint:Pubkey,pub quote_mint:Pubkey,pub creator:Pubkey,pub amount:u64}
+
+impl anchor_lang::Event for DonationFeePdaCranked {  fn data(&self)->Vec<u8>{let mut data=Vec::with_capacity(256);data.extend_from_slice(Self::DISCRIMINATOR);anchor_lang::AnchorSerialize::serialize(self,&mut data).unwrap();data} }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+impl anchor_lang::Discriminator for DonationFeePdaCranked {
+    const DISCRIMINATOR: &'static [u8] = &[30, 208, 107, 93, 177, 0, 223, 78];
+}
+
+
+#[inline(always)]
+pub(crate) fn donation_clone_account<'a>(info: &AccountInfo<'a>) -> AccountInfo<'a> {
+ AccountInfo {
+  key: info.key, lamports: info.lamports.clone(), data: info.data.clone(), owner: info.owner,
+  rent_epoch: info.rent_epoch, is_signer: info.is_signer, is_writable: info.is_writable,
+  executable: info.executable,
+ }
+}

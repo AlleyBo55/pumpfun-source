@@ -3,6 +3,18 @@ use crate::checked_program::{CheckedSystemProgram, CheckedSystemProgramBumps, __
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface};
 use crate::state::{BondingCurve, MayhemState, MayhemStatus, PUMP_ID};
 
+
+
+
+
+#[event]
+pub struct BurnEvent {
+    pub amount: u64,
+    pub mint: Pubkey,
+    pub mayhem_state: Pubkey,
+    pub timestamp: i64,
+}
+
 #[derive(Accounts)]
 pub struct BurnTokens<'info> {
     #[account(mut, seeds = [b"mayhem-state", mint.key().as_ref()], bump)]
@@ -26,7 +38,7 @@ pub struct BurnTokens<'info> {
     pub pump_program: UncheckedAccount<'info>,
     /// CHECK: The captured burn parser consumes this account without further constraints.
     pub pump_event_authority: UncheckedAccount<'info>,
-    pub system_program: CheckedSystemProgram<'info>,
+    pub system_program: Program<'info,System>,
     pub token_program: Interface<'info, TokenInterface>,
     /// CHECK: Original parser derives this PDA at runtime and returns ConstraintSeeds.
     #[account(seeds = [b"__event_authority"], bump)]
@@ -37,26 +49,62 @@ pub struct BurnTokens<'info> {
 
 pub fn handler(ctx: Context<BurnTokens>) -> Result<()> {
     // 0xd8a8..0xda30: Clock failure follows unwrap panic, deadline failure is 6005.
-    require!(ctx.accounts.mayhem_state.end_timestamp <= Clock::get().unwrap().unix_timestamp,
-        BurnError::MayhemModeNotEnded);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    let end_timestamp = ctx.accounts.mayhem_state.end_timestamp;
+    let current_unix_timestamp: i64 = Clock::get().unwrap().unix_timestamp;
+    if end_timestamp > current_unix_timestamp { return Err(anchor_lang::error!(BurnError::MayhemModeNotEnded)); }
+
     // 0xda38..0xdb90: a second burn is rejected with 6004.
+
     require!(ctx.accounts.mayhem_state.status != MayhemStatus::Ended,
         BurnError::MayhemModeEnded);
     let amount = ctx.accounts.mayhem_token_vault.amount;
-    let bump = [ctx.bumps.sol_vault];
-    let seeds: &[&[u8]] = &[b"sol-vault", &bump];
+
+
     token_interface::burn(CpiContext::new_with_signer(
         ctx.accounts.token_program.key(),
         token_interface::Burn {
             mint: ctx.accounts.mint.to_account_info(),
             from: ctx.accounts.mayhem_token_vault.to_account_info(),
             authority: ctx.accounts.sol_vault.to_account_info(),
-        }, &[seeds]), amount)?;
+        }, &[&[b"sol-vault", &[ctx.bumps.sol_vault]]]), amount)?;
     ctx.accounts.mayhem_state.burned_amount = amount;
     // The binary reads Clock independently for the two event paths.
+
+
+
+
+
+
     emit!(BurnEvent { amount, mint: ctx.accounts.mint.key(),
         mayhem_state: ctx.accounts.mayhem_state.key(),
         timestamp: Clock::get().unwrap().unix_timestamp });
+
+
+
     emit_cpi!(BurnEvent { amount, mint: ctx.accounts.mint.key(),
         mayhem_state: ctx.accounts.mayhem_state.key(),
         timestamp: Clock::get().unwrap().unix_timestamp });
@@ -64,18 +112,7 @@ pub fn handler(ctx: Context<BurnTokens>) -> Result<()> {
     Ok(())
 }
 
-#[event]
-pub struct BurnEvent {
-    pub amount: u64,
-    pub mint: Pubkey,
-    pub mayhem_state: Pubkey,
-    pub timestamp: i64,
-}
 
-#[error_code]
-pub enum BurnError {
-    #[msg("Mayhem mode ended")]
-    MayhemModeEnded = 4,
-    #[msg("Mayhem mode not ended")]
-    MayhemModeNotEnded = 5,
-}
+
+// Keep the published module path while using the shared error namespace.
+pub use crate::MayhemError as BurnError;

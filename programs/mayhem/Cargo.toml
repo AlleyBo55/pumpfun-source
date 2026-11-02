@@ -1,3 +1,4 @@
+cargo-features = ["profile-rustflags"]
 [package]
 name = "mayhem-recovered"
 version = "0.1.0"
@@ -20,6 +21,7 @@ custom-heap = []
 custom-panic = []
 
 [dependencies]
+curve-accounts = {path="curve-accounts"}
 anchor-lang = { version = "=1.0.0", features = ["event-cpi", "init-if-needed"] }
 anchor-spl = { version = "=1.0.0", default-features = false, features = ["associated_token", "token", "token_2022"] }
 
@@ -30,3 +32,15 @@ lto = false
 codegen-units = 1
 
 [workspace]
+
+[patch.crates-io]
+anchor-lang = { path = "vendor/anchor-lang" }
+
+[profile.release.package.curve-accounts]
+rustflags = ["--remap-path-prefix=curve-accounts/="]
+
+[profile.release.package.solana-stake-interface]
+codegen-units = 2
+
+[profile.release.package.anchor-lang]
+rustflags = ["--remap-path-prefix=vendor/anchor-lang/src/bpf_writer.rs=src/bpf_writer.rs"]

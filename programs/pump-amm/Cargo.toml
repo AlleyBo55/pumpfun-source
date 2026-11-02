@@ -23,6 +23,10 @@ anchor-lang = { version = "=0.31.1", features = ["event-cpi", "init-if-needed"] 
 
 anchor-spl = { version = "=0.31.1", default-features = false, features = ["token", "token_2022", "associated_token", "token_2022_extensions", "metadata"] }
 
+uint = { version = "=0.9.5", default-features = false }
+
+native-transfer-fee = { path = "../../crates/native-transfer-fee" }
+
 [profile.release]
 panic = "abort"
 overflow-checks = true
@@ -31,5 +35,3 @@ codegen-units = 1
 
 [workspace]
 
-[patch.crates-io]
-solana-pubkey = { path = "vendor/solana-pubkey" }

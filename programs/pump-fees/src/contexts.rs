@@ -8,7 +8,7 @@ use crate::FeeError;
 pub struct ExtendFeeConfig<'info> {
     /// CHECK: owner, discriminator, stored bump and PDA are validated by handler.
     #[account(mut)]
-    pub fee_config: UncheckedAccount<'info>,
+    pub fee_config: AccountInfo<'info>,
     pub user: Signer<'info>,
     /// CHECK: used only as the configuration PDA namespace.
     pub config_program_id: UncheckedAccount<'info>,
@@ -31,31 +31,31 @@ pub struct GetFeesWithQuoteMint<'info> {
     pub config_program_id: UncheckedAccount<'info>,
 }
 
-#[event_cpi]
-#[derive(Accounts)]
-pub struct InitializeFeeConfig<'info> {
-    #[account(mut, address = anchor_lang::solana_program::pubkey!("8LWu7QM2dGR1G8nKDHthckea57bkCzXyBTAKPJUBDHo8") @ FeeError::InvalidAdmin)]
-    pub admin: Signer<'info>,
-    #[account(init, payer = admin, space = 2512,
-              seeds = [b"fee_config", config_program_id.key().as_ref()], bump)]
-    pub fee_config: Account<'info, FeeConfig>,
-    pub system_program: Program<'info, System>,
-    /// CHECK: Key is the FeeConfig PDA namespace.
-    pub config_program_id: UncheckedAccount<'info>,
-}
+pub use crate::instructions::admin::initialize_fee_config::*;
 
-#[event_cpi]
-#[derive(Accounts)]
-pub struct InitializeFeeProgramGlobal<'info> {
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    #[account(seeds = [b"global"], bump, seeds::program = crate::pump_global::PUMP_ID,
-              has_one = authority @ FeeError::NotAuthorized)]
-    pub pump_global: Account<'info, crate::pump_global::Global>,
-    #[account(init, payer = authority, space = 338, seeds = [b"fee-program-global"], bump)]
-    pub fee_program_global: Account<'info, FeeProgramGlobal>,
-    pub system_program: Program<'info, System>,
-}
+
+
+
+
+
+
+
+
+
+
+
+pub use crate::instructions::admin::initialize_fee_program_global::*;
+
+
+
+
+
+
+
+
+
+
+
 
 #[derive(Accounts)]
 pub struct RevokeFeeSharingAuthority {}
