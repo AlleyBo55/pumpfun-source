@@ -2,7 +2,7 @@
 //! Byte-checked original parser 0x46378 (buy), 0x4cc98 (sell).
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token_interface::{Mint,TokenAccount,TokenInterface};
+use curve_accounts::token_interface::{Mint,TokenAccount,TokenInterface};
 use anchor_spl::token_2022::Token2022;
 use crate::{GlobalParams,MayhemError};
 use crate::state::MayhemStatus;
@@ -26,7 +26,7 @@ pub struct BuyPumpSwap<'info> {
  pub mayhem_quote_vault:Box<InterfaceAccount<'info,TokenAccount>>,
  /// CHECK: original PDA+mut only; no SystemAccount ownership check.
  #[account(mut,seeds=[b"sol-vault"],bump)]pub sol_vault:UncheckedAccount<'info>,
- pub system_program:CheckedSystemProgram<'info>,
+ pub system_program:Program<'info,System>,
  // Original parses Interface then applies address constraint 2012 at 0x49568.
  #[account(address=SPL_TOKEN_ID)]pub quote_token_program:Interface<'info,TokenInterface>,
  pub base_token_program:Program<'info,Token2022>,
@@ -72,58 +72,59 @@ pub struct BuyPumpSwap<'info> {
 fn math()->Error {MayhemError::MathOverflow.into()}
 pub fn handler(ctx:Context<BuyPumpSwap>,reference:u128,tolerance_bps:u16,retained_reserve_bps:u16)->Result<()> {
  let a=&mut *ctx.accounts;
+
+
+ a.mayhem_state.validate_trade(&a.global_params)?;
+
+
+
+
+
+ let effective_result:core::result::Result<u64,MayhemError>=(||{(a.pool_quote_token_account.amount as i128).checked_add(a.pool.virtual_quote_reserves).and_then(|n|u64::try_from(n).ok()).ok_or(MayhemError::MathOverflow)})();let effective_quote=effective_result?;
+ a.mayhem_state.validate_quote(effective_quote,&a.global_params,&a.quote_mint.key())?;
+
+
+
+
+ let price_check:core::result::Result<(),MayhemError>=(||{let vt=a.pool_base_token_account.amount as u128;let vs=effective_quote as u128;
+ let price=match (vs*1_000_000_000_000_000u128).checked_div(vt){Some(value)=>value,None=>return Err(MayhemError::MathOverflow)};
+ let scaled=match reference.checked_mul(tolerance_bps as u128){Some(value)=>value,None=>return Err(MayhemError::MathOverflow)};
+ let delta=scaled/10_000;
+ let low=match reference.checked_sub(delta){Some(value)=>value,None=>return Err(MayhemError::MathOverflow)};
+ let high=match reference.checked_add(delta){Some(value)=>value,None=>return Err(MayhemError::MathOverflow)};
+ if price<low||price>high{return Err(MayhemError::PumpCpiSlippage);}Ok(())})();price_check?;
+ let (input,output)=crate::state::buy_quote(&a.global_params,a.pool_base_token_account.amount,effective_quote,a.mayhem_token_vault.amount,retained_reserve_bps,a.quote_mint.key())?;
+
+
+
+
  let native=a.quote_mint.key()==WSOL;
- let native_accounting=native||a.quote_mint.key()==Pubkey::default();
- require!(!a.global_params.paused,MayhemError::TradingPaused);
- let now=Clock::get().unwrap().unix_timestamp;
- let last=a.mayhem_state.field_89 as i64;
- let interval=i64::from_le_bytes(a.global_params.reset_middle[9..17].try_into().unwrap());
- if last!=0&&interval!=0 {require!(now>=last+interval,SellError::TradeRateLimit);}
- a.mayhem_state.field_89=now as u64;
- let effective_quote=u64::try_from((a.pool_quote_token_account.amount as i128).checked_add(a.pool.virtual_quote_reserves).ok_or_else(math)?).map_err(|_|math())?;
- require!(Clock::get().unwrap().unix_timestamp<a.mayhem_state.end_timestamp,SellError::MayhemModeEnded);
- if a.mayhem_state.status!=MayhemStatus::Variant1 {
-  require!(effective_quote>=if native_accounting{u64::from_le_bytes(a.global_params.preserved_middle_a)}else{u64::from_le_bytes(a.global_params.reset_stable_suffix[0..8].try_into().unwrap())},SellError::SolReservesTooLow);
-  a.mayhem_state.status=MayhemStatus::Variant1;
- }
- let vt=a.pool_base_token_account.amount as u128;let vs=effective_quote as u128;
- if vt==0{return Err(math());}
- let scaled=reference.checked_mul(tolerance_bps as u128).ok_or_else(math)?;
- let price=vs*1_000_000_000_000_000u128/vt;let delta=scaled/10_000;
- let low=reference.checked_sub(delta).ok_or_else(math)?;let high=reference.checked_add(delta).ok_or_else(math)?;
- if price<low||price>high{return Err(SellError::PumpCpiSlippage.into());}
- let retained=10_000u16-retained_reserve_bps;
- let tokens=a.mayhem_token_vault.amount as u128;
- let mut output=u64::try_from(vs*tokens/(vt+tokens)).unwrap();
- let cap=if native_accounting{u64::from_le_bytes(a.global_params.reset_prefix[8..16].try_into().unwrap())}else{u64::from_le_bytes(a.global_params.reset_stable_prefix[0..8].try_into().unwrap())};
- if cap!=0 {output=output.min(cap);}
- output=output.min((effective_quote as u128*retained as u128/10_000) as u64);
- let input=u64::try_from((output as u128*vt).checked_div(vs+output as u128).ok_or(PumpSwapError::PumpSwapCpiMathOverflow).unwrap()).unwrap();
  let before_sol=if native{a.sol_vault.lamports()}else{a.mayhem_quote_vault.amount};let before_tokens=a.mayhem_token_vault.amount;
- let bump=[ctx.bumps.sol_vault];let seeds:&[&[u8]]=&[b"sol-vault",&bump];
  if native {
-  let ix=anchor_lang::solana_program::system_instruction::transfer(&a.sol_vault.key(),&a.mayhem_quote_vault.key(),output);
-  invoke_signed(&ix,&[a.sol_vault.to_account_info(),a.mayhem_quote_vault.to_account_info(),a.system_program.to_account_info()],&[seeds])?;
-  invoke_signed(&Instruction{program_id:a.quote_token_program.key(),accounts:vec![AccountMeta::new(a.mayhem_quote_vault.key(),false)],data:vec![17]},&[a.mayhem_quote_vault.to_account_info(),a.quote_token_program.to_account_info()],&[seeds])?;
+  anchor_lang::system_program::transfer(CpiContext::new_with_signer(a.system_program.key(), anchor_lang::system_program::Transfer { from:a.sol_vault.to_account_info(), to:a.mayhem_quote_vault.to_account_info() }, &[&[b"sol-vault",&[ctx.bumps.sol_vault]]]), output)?;
+
+  curve_accounts::token_interface::sync_native(CpiContext::new(a.quote_token_program.key(),curve_accounts::token_interface::SyncNative{account:a.mayhem_quote_vault.to_account_info()}))?;
   a.mayhem_quote_vault.reload()?;
  }
- let infos=[a.pool.to_account_info(),a.sol_vault.to_account_info(),a.global_config.to_account_info(),a.mint.to_account_info(),a.quote_mint.to_account_info(),a.mayhem_token_vault.to_account_info(),a.mayhem_quote_vault.to_account_info(),a.pool_base_token_account.to_account_info(),a.pool_quote_token_account.to_account_info(),a.protocol_fee_recipient.to_account_info(),a.protocol_fee_recipient_token_account.to_account_info(),a.base_token_program.to_account_info(),a.quote_token_program.to_account_info(),a.system_program.to_account_info(),a.associated_token_program.to_account_info(),a.pump_swap_event_authority.to_account_info(),a.pump_swap_program.to_account_info(),a.coin_creator_vault_ata.to_account_info(),a.coin_creator_vault_authority.to_account_info(),a.global_volume_accumulator.to_account_info(),a.user_volume_accumulator.to_account_info(),a.fee_config.to_account_info(),a.fee_program.to_account_info(),a.buyback_recipient.to_account_info(),a.buyback_recipient_ata.to_account_info()];
- let writable=[true,true,false,false,false,true,true,true,true,false,true,false,false,false,false,false,false,true,false,true,true,false,false,false,true];
- let metas=infos.iter().enumerate().map(|(i,info)|if i>=23{if info.is_writable{AccountMeta::new(*info.key,info.is_signer)}else{AccountMeta::new_readonly(*info.key,info.is_signer)}}else if writable[i]{AccountMeta::new(*info.key,i==1)}else{AccountMeta::new_readonly(*info.key,i==1)}).collect();
- let mut data=vec![0x66,0x06,0x3d,0x12,0x01,0xda,0xeb,0xea];data.extend_from_slice(&input.to_le_bytes());data.extend_from_slice(&output.to_le_bytes());data.push(0);
- require!(invoke_signed(&Instruction{program_id:AMM_ID,accounts:metas,data},&infos,&[seeds]).is_ok(),PumpSwapError::PumpSwapCpiFailed);
- if native {invoke_signed(&Instruction{program_id:a.quote_token_program.key(),accounts:vec![AccountMeta::new(a.mayhem_quote_vault.key(),false),AccountMeta::new(a.sol_vault.key(),false),AccountMeta::new_readonly(a.sol_vault.key(),true)],data:vec![9]},&[a.mayhem_quote_vault.to_account_info(),a.sol_vault.to_account_info(),a.sol_vault.to_account_info(),a.quote_token_program.to_account_info()],&[seeds])?;}
+ crate::amm_cpi::cpi::buy(CpiContext::new_with_signer(a.pump_swap_program.key(),crate::amm_cpi::cpi::accounts::Buy{user:a.sol_vault.to_account_info(),pool:a.pool.to_account_info(),global_config:a.global_config.to_account_info(),pool_base_token_account:a.pool_base_token_account.to_account_info(),pool_quote_token_account:a.pool_quote_token_account.to_account_info(),user_base_token_account:a.mayhem_token_vault.to_account_info(),user_quote_token_account:a.mayhem_quote_vault.to_account_info(),quote_token_program:a.quote_token_program.to_account_info(),base_token_program:a.base_token_program.to_account_info(),system_program:a.system_program.to_account_info(),quote_mint:a.quote_mint.to_account_info(),base_mint:a.mint.to_account_info(),associated_token_program:a.associated_token_program.to_account_info(),event_authority:a.pump_swap_event_authority.to_account_info(),program:a.pump_swap_program.to_account_info(),protocol_fee_recipient:a.protocol_fee_recipient.to_account_info(),protocol_fee_recipient_token_account:a.protocol_fee_recipient_token_account.to_account_info(),coin_creator_vault_ata:a.coin_creator_vault_ata.to_account_info(),coin_creator_vault_authority:a.coin_creator_vault_authority.to_account_info(),global_volume_accumulator:a.global_volume_accumulator.to_account_info(),user_volume_accumulator:a.user_volume_accumulator.to_account_info(),fee_config:a.fee_config.to_account_info(),fee_program:a.fee_program.to_account_info()},&[&[b"sol-vault",&[ctx.bumps.sol_vault]]]).with_remaining_accounts(vec![a.buyback_recipient.to_account_info(),a.buyback_recipient_ata.to_account_info()]),input,output,crate::amm_cpi::types::OptionBool(false)).map_err(super::pump_amm_interface::buy_cpi_failed)?;
+ if native {curve_accounts::token_interface::close_account(CpiContext::new_with_signer(a.quote_token_program.key(),curve_accounts::token_interface::CloseAccount{account:a.mayhem_quote_vault.to_account_info(),destination:a.sol_vault.to_account_info(),authority:a.sol_vault.to_account_info()},&[&[b"sol-vault",&[ctx.bumps.sol_vault]]]))?;}
+
+
+
+
+
+
  a.mayhem_token_vault.reload()?;a.pool_base_token_account.reload()?;a.pool_quote_token_account.reload()?;if !native{a.mayhem_quote_vault.reload()?;}
  let after_quote=if native{a.sol_vault.lamports()}else{a.mayhem_quote_vault.amount};
- let sol=before_sol-after_quote;let tokens=a.mayhem_token_vault.amount-before_tokens;
- if native_accounting{a.global_params.sol_deployed=a.global_params.sol_deployed.checked_add(sol as i128).ok_or_else(math)?;}else{a.global_params.stable_deployed=a.global_params.stable_deployed.checked_add(sol as i128).ok_or_else(math)?;}
- a.mayhem_state.field_56=a.mayhem_state.field_56.checked_add(sol as i128).ok_or_else(math)?;
- a.mayhem_state.field_72=a.mayhem_state.field_72.checked_sub(tokens as i128).ok_or_else(math)?;
- let global_deployed=if native_accounting{a.global_params.sol_deployed}else{a.global_params.stable_deployed};
- let overall_limit=if native_accounting{u64::from_le_bytes(a.global_params.reset_prefix[24..32].try_into().unwrap())}else{u64::from_le_bytes(a.global_params.reset_stable_prefix[8..16].try_into().unwrap())};
- let coin_limit=if native_accounting{u64::from_le_bytes(a.global_params.reset_prefix[32..40].try_into().unwrap())}else{u64::from_le_bytes(a.global_params.reset_stable_prefix[16..24].try_into().unwrap())};
- if global_deployed>0 {require_gt!(overall_limit,global_deployed as u64,BuyError::OverallRiskExceeded);}
- if a.mayhem_state.field_56>0 {require_gt!(coin_limit,a.mayhem_state.field_56 as u64,BuyError::CoinRiskExceeded);}
- let event=SellEvent{side:0,sol_vault:a.sol_vault.key(),mint:a.mint.key(),sol_amount:if native{sol}else{0},token_amount:tokens,sol_vault_balance:if native{a.sol_vault.lamports()}else{0},token_vault_balance:a.mayhem_token_vault.amount,state_sol_deployed:if native{a.mayhem_state.field_56}else{0},state_token_net:a.mayhem_state.field_72,virtual_sol:if native{a.pool_quote_token_account.amount}else{0},virtual_tokens:a.pool_base_token_account.amount,global_sol_deployed:if native{a.global_params.sol_deployed}else{0},timestamp:Clock::get()?.unix_timestamp,end_timestamp:a.mayhem_state.end_timestamp,real_sol:if native{a.pool_quote_token_account.amount}else{0},real_tokens:a.pool_base_token_account.amount,version:a.global_params.version,retained_reserve_bps,quote_amount:sol,quote_vault_balance:after_quote,state_quote_deployed:a.mayhem_state.field_56,virtual_quote:a.pool_quote_token_account.amount,global_quote_deployed:if native_accounting{a.global_params.sol_deployed}else{a.global_params.stable_deployed},real_quote:a.pool_quote_token_account.amount,quote_mint:if native{Pubkey::default()}else{a.quote_mint.key()}};
+ let (sol,tokens)=super::pump_amm_interface::bought_amounts(before_sol,after_quote,before_tokens,a.mayhem_token_vault.amount);
+ crate::state::record_amm_buy(&mut a.global_params,&mut a.mayhem_state,sol,tokens,&a.quote_mint.key())?;
+
+
+
+
+
+
+
+ let quote_vault_balance=if native{a.sol_vault.lamports()}else{a.mayhem_quote_vault.amount};let state_quote_deployed=a.mayhem_state.field_56;let global_sol_deployed=if native{a.global_params.sol_deployed}else{0};let virtual_quote=a.pool_quote_token_account.amount;let real_quote=a.pool_quote_token_account.amount;let global_quote_deployed=if native{a.global_params.sol_deployed}else{a.global_params.stable_deployed};let sol_amount=if native{sol}else{0};let sol_vault_balance=if native{quote_vault_balance}else{0};let state_sol_deployed=if native{a.mayhem_state.field_56}else{0};let virtual_sol=if native{a.pool_quote_token_account.amount}else{0};let real_sol=if native{a.pool_quote_token_account.amount}else{0};let quote_mint=if native{Pubkey::default()}else{a.quote_mint.key()}; let event=SellEvent{side:false,quote_vault_balance,state_quote_deployed,global_sol_deployed,virtual_quote,real_quote,global_quote_deployed,sol_amount,sol_vault_balance,state_sol_deployed,virtual_sol,real_sol,sol_vault:a.sol_vault.key(),mint:a.mint.key(),token_amount:tokens,token_vault_balance:a.mayhem_token_vault.amount,state_token_net:a.mayhem_state.field_72,virtual_tokens:a.pool_base_token_account.amount,end_timestamp:a.mayhem_state.end_timestamp,timestamp:Clock::get()?.unix_timestamp,real_tokens:a.pool_base_token_account.amount,version:a.global_params.version,retained_reserve_bps,quote_amount:sol,quote_mint};
  emit!(event);emit_cpi!(event);Ok(())
 }

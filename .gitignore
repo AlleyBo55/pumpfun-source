@@ -1,8 +1,2 @@
-/work/
-/.build/
-__pycache__/
-*.pyc
-.venv/
-
 **/target/
 .DS_Store

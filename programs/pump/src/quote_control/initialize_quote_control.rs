@@ -2,6 +2,8 @@ use anchor_lang::prelude::*;
 
 use super::state::{QuoteControl, QUOTE_CONTROL_SEED};
 
+// layout-pad(2): aligns the next Source site with the original line
+
 #[derive(Accounts)]
 pub struct InitializeQuoteControl<'info> {
     #[account(

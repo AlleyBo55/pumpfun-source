@@ -9,54 +9,32 @@ use crate::idl_runtime::IdlRuntime;
 pub const DISC: [u8; 8] = [24, 70, 98, 191, 58, 144, 123, 158];
 const SYSTEM: Key = [0; 32];
 const HEADER: usize = 44;
-// Captured original origin programs/contracts/src/lib.rs:36 is evidence only.
-// The new source does not claim that original path/line; see diagnostic-gaps.json.
+// Original error-origin data is explicitly reconstructed in the owned3002
+// constructor. This does not attribute this new source file to that location.
 
 pub type ProgramFailure = solana_program::program_error::ProgramError;
-#[derive(Debug)]
-pub enum Cause { Framework(u32), Program(ProgramFailure), Owned(crate::generated_exit::ExitError) }
-#[derive(Debug)]
-pub struct IdlError {
-    pub cause: Cause,
-    pub account: Option<&'static str>,
-    pub keys: Option<(Key, Key)>,
-    pub values: Option<(u64, u64)>,
-    pub origin: Option<(&'static str, u32)>,
-}
+pub type IdlError = crate::generated_exit::exit_error::Error;
+use crate::generated_exit::exit_error::ErrorCode;
 pub type I<T> = Result<T, IdlError>;
-fn code(n: u32) -> IdlError {
-    IdlError { cause: Cause::Framework(n), account: None, keys: None, values: None, origin: None }
-}
-pub fn program_error(error: ProgramFailure) -> IdlError {
-    IdlError { cause: Cause::Program(error), account: None, keys: None, values: None, origin: None }
-}
-// Typed Account::try_from boxes a borrow failure before outer account naming.
-fn own_typed_borrow_failure(mut error: IdlError) -> IdlError {
-    error.cause = match error.cause {
-        Cause::Program(program) => Cause::Owned(program.into()),
-        cause => cause,
-    };
-    error
-}
+fn code(n: ErrorCode) -> IdlError { n.into() }
+pub fn program_error(error: ProgramFailure) -> IdlError { error.into() }
 fn named<T>(r: I<T>, name: &'static str) -> I<T> {
-    r.map_err(|mut e| {
-        match e.cause {
-            Cause::Owned(error) => { e.cause = Cause::Owned(error.with_account_name(name)); }
-            _ => { e.account = Some(name); e.origin = None; }
-        }
-        e
-    })
+    r.map_err(|error| error.with_account_name(name))
 }
-fn require(ok: bool, n: u32, name: &'static str) -> I<()> {
+fn require(ok: bool, n: ErrorCode, name: &'static str) -> I<()> {
     named(if ok { Ok(()) } else { Err(code(n)) }, name)
 }
-fn require_keys(left: Key, right: Key, n: u32, name: &'static str) -> I<()> {
+fn require_keys(left: Key, right: Key, n: ErrorCode, name: &'static str) -> I<()> {
     if left == right { return Ok(()); }
-    let mut e = code(n); e.keys = Some((left, right)); named(Err(e), name)
+    let error = code(n).with_pubkeys((
+        solana_program::pubkey::Pubkey::new_from_array(left),
+        solana_program::pubkey::Pubkey::new_from_array(right),
+    ));
+    named(Err(error), name)
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Header { pub authority: Key, pub data_len: u32 }
+#[derive(borsh::BorshDeserialize, borsh::BorshSerialize, Clone, Debug)]
+pub struct Header { pub authority: solana_program::pubkey::Pubkey, pub data_len: u32 }
 struct Typed { info: Account, value: Header }
 enum Instruction {
     Create(u64), CreateBuffer, Write(Vec<u8>), SetBuffer,
@@ -65,66 +43,43 @@ enum Instruction {
 // W170 enum decoder consumes a prefix, not the entire suffix. Allocation/OOM
 // details of W77's Vec reader remain a stated framework premise.
 fn decode(data: &[u8]) -> I<Instruction> {
-    let (&tag, tail) = data.split_first().ok_or_else(||code(102))?;
+    let (&tag, tail) = data.split_first().ok_or_else(||code(ErrorCode::InstructionDidNotDeserialize))?;
     let u64_arg = || -> I<u64> {
-        Ok(u64::from_le_bytes(tail.get(..8).ok_or_else(||code(102))?.try_into().unwrap()))
+        Ok(u64::from_le_bytes(tail.get(..8).ok_or_else(||code(ErrorCode::InstructionDidNotDeserialize))?.try_into().unwrap()))
     };
     Ok(match tag {
         0 => Instruction::Create(u64_arg()?),
         1 => Instruction::CreateBuffer,
         2 => {
-            let len = u32::from_le_bytes(tail.get(..4).ok_or_else(||code(102))?.try_into().unwrap()) as usize;
-            let bytes = tail.get(4..).and_then(|s|s.get(..len)).ok_or_else(||code(102))?;
+            let len = u32::from_le_bytes(tail.get(..4).ok_or_else(||code(ErrorCode::InstructionDidNotDeserialize))?.try_into().unwrap()) as usize;
+            let bytes = tail.get(4..).and_then(|s|s.get(..len)).ok_or_else(||code(ErrorCode::InstructionDidNotDeserialize))?;
             Instruction::Write(bytes.to_vec())
         }
         3 => Instruction::SetBuffer,
-        4 => Instruction::SetAuthority(tail.get(..32).ok_or_else(||code(102))?.try_into().unwrap()),
+        4 => Instruction::SetAuthority(tail.get(..32).ok_or_else(||code(ErrorCode::InstructionDidNotDeserialize))?.try_into().unwrap()),
         5 => Instruction::Close,
         6 => Instruction::Resize(u64_arg()?),
-        _ => return Err(code(102)),
+        _ => return Err(code(ErrorCode::InstructionDidNotDeserialize)),
     })
 }
 // W218: skip eight bytes even unchecked; <8 is a slice panic, 8..43 ->3003.
 // Neither checked nor unchecked decode validates data_len against capacity.
-fn unchecked_header(data: &[u8]) -> I<Header> {
-    use std::io::{Error, ErrorKind, Read};
+fn unchecked_header(data: &mut &[u8]) -> I<Header> {
     let mut tail = &data[8..];
-    let mut decode = || -> std::io::Result<Header> {
-        let mut read_field = |field: &mut [u8]| {
-            tail.read_exact(field).map_err(|error| {
-                if error.kind() == ErrorKind::UnexpectedEof {
-                    Error::new(ErrorKind::InvalidInput, "Unexpected length of input")
-                } else {
-                    error
-                }
-            })
-        };
-        let mut authority = [0; 32];
-        read_field(&mut authority)?;
-        let mut data_len = [0; 4];
-        read_field(&mut data_len)?;
-        Ok(Header { authority, data_len: u32::from_le_bytes(data_len) })
-    };
-    decode().map_err(|error| {
+    <Header as borsh::BorshDeserialize>::deserialize(&mut tail).map_err(|error| {
         let owned = crate::generated_exit::exit_error::account_did_not_deserialize();
         drop(error);
-        IdlError { cause: Cause::Owned(owned), account: None, keys: None, values: None, origin: None }
+        owned
     })
 }
-fn checked_header(data: &[u8]) -> I<Header> {
+fn checked_header(data: &mut &[u8]) -> I<Header> {
     if data.len() < 8 {
-        return Err(IdlError {
-            cause: Cause::Owned(crate::generated_exit::exit_error::account_discriminator_not_found()),
-            account: None, keys: None, values: None, origin: None,
-        });
+        return Err(crate::generated_exit::exit_error::account_discriminator_not_found());
     }
     if data[..8] != DISC {
-        let owned = crate::generated_exit::exit_error::account_discriminator_mismatch(
-            crate::generated_exit::exit_error::Source { filename: file!(), line: line!() },
-        ).with_account_name("IdlAccount");
-        return Err(IdlError {
-            cause: Cause::Owned(owned), account: None, keys: None, values: None, origin: None,
-        }); // enclosing generated parser replaces the owned account name.
+        let owned = crate::generated_exit::exit_error::account_discriminator_mismatch()
+            .with_account_name("IdlAccount");
+        return Err(owned); // enclosing generated parser replaces and drops the owned account name.
     }
     unchecked_header(data)
 }
@@ -132,18 +87,18 @@ struct Cursor<'a> { accounts: &'a [Account], at: usize }
 impl<'a> Cursor<'a> {
     fn new(accounts: &'a [Account]) -> Self { Self { accounts, at: 0 } }
     fn raw(&mut self) -> I<Account> {
-        let a = self.accounts.get(self.at).copied().ok_or_else(||code(3005))?;
+        let a = self.accounts.get(self.at).copied().ok_or_else(||code(ErrorCode::AccountNotEnoughKeys))?;
         self.at += 1; Ok(a)
     }
     fn raw_named(&mut self, name: &'static str) -> I<Account> { named(self.raw(), name) }
     fn signer(&mut self, name: &'static str) -> I<Account> {
         let a = self.raw_named(name)?;
-        require(a.signer, 3010, name)?; Ok(a) // W80 ->W280, not constraint2002.
+        require(a.signer, ErrorCode::AccountNotSigner, name)?; Ok(a) // W80 ->W280, not constraint2002.
     }
     fn system<R: IdlRuntime>(&mut self, rt: &R) -> I<Account> {
         let a = self.raw_named("system_program")?;
-        require_keys(a.key, SYSTEM, 3008, "system_program")?;
-        require(rt.idl_executable(a), 3009, "system_program")?; Ok(a)
+        require_keys(a.key, SYSTEM, ErrorCode::InvalidProgramId, "system_program")?;
+        require(rt.idl_executable(a), ErrorCode::InvalidProgramExecutable, "system_program")?; Ok(a)
     }
     fn typed<R: IdlRuntime>(&mut self, rt: &R, name: &'static str) -> I<Typed> {
         let a = self.raw_named(name)?;
@@ -152,21 +107,22 @@ impl<'a> Cursor<'a> {
 }
 fn typed<R: IdlRuntime>(rt: &R, info: Account, checked: bool) -> I<Typed> {
     let owner = rt.idl_owner(info);
-    if owner == SYSTEM && rt.idl_lamports_panicking(info) == 0 { return Err(code(3012)); }
-    if owner != RELAY { let mut e = code(3007); e.keys = Some((owner, RELAY)); return Err(e); }
-    let bytes = if checked {
-        rt.idl_data(info).map_err(own_typed_borrow_failure)?
-    } else {
-        rt.idl_data(info)?
-    };
-    let value = if checked { checked_header(&bytes)? } else { unchecked_header(&bytes)? };
+    if owner == SYSTEM && rt.idl_lamports_panicking(info) == 0 { return Err(code(ErrorCode::AccountNotInitialized)); }
+    if owner != RELAY {
+        return Err(code(ErrorCode::AccountOwnedByWrongProgram).with_pubkeys((
+            solana_program::pubkey::Pubkey::new_from_array(owner),
+            solana_program::pubkey::Pubkey::new_from_array(RELAY),
+        )));
+    }
+    let bytes = rt.idl_data(info)?;
+    let value = if checked { checked_header(&mut &bytes[..])? } else { unchecked_header(&mut &bytes[..])? };
     drop(bytes); Ok(Typed { info, value })
 }
-fn writable(a: Account, name: &'static str) -> I<()> { require(a.writable, 2000, name) }
+fn writable(a: Account, name: &'static str) -> I<()> { require(a.writable, ErrorCode::ConstraintMut, name) }
 fn authorized(idl: &Typed, authority: Account, name: &'static str) -> I<()> {
-    require_keys(idl.value.authority, authority.key, 2001, name)
+    require_keys(idl.value.authority.to_bytes(), authority.key, ErrorCode::ConstraintHasOne, name)
 }
-fn active_authority(a: Account) -> I<()> { require(a.key != SYSTEM, 2003, "authority") }
+fn active_authority(a: Account) -> I<()> { require(a.key != SYSTEM, ErrorCode::ConstraintRaw, "authority") }
 // W213: typed idl, signer, then idl mut/has_one, then non-erased authority.
 fn admit_write<R: IdlRuntime>(rt: &R, c: &mut Cursor<'_>) -> I<Typed> {
     let idl = c.typed(rt, "idl")?;
@@ -191,7 +147,7 @@ fn admit_set_buffer<R: IdlRuntime>(rt: &R, c: &mut Cursor<'_>) -> I<(Typed, Type
     let idl = c.typed(rt, "idl")?;
     let authority = c.signer("authority")?;
     writable(buffer.info, "buffer")?;
-    require(buffer.value.authority == idl.value.authority, 2003, "buffer")?;
+    require(buffer.value.authority == idl.value.authority, ErrorCode::ConstraintRaw, "buffer")?;
     writable(idl.info, "idl")?; authorized(&idl, authority, "idl")?;
     active_authority(authority)?; Ok((buffer, idl))
 }
@@ -202,7 +158,7 @@ fn admit_close<R: IdlRuntime>(rt: &R, c: &mut Cursor<'_>) -> I<(Typed, Account)>
     let authority = c.signer("authority")?;
     let destination = c.raw_named("sol_destination")?;
     writable(account.info, "account")?; authorized(&account, authority, "account")?;
-    require(account.info.key != destination.key, 2011, "account")?;
+    require(account.info.key != destination.key, ErrorCode::ConstraintClose, "account")?;
     active_authority(authority)?; writable(destination, "sol_destination")?;
     Ok((account, destination))
 }
@@ -211,14 +167,14 @@ fn admit_buffer<R: IdlRuntime>(rt: &R, c: &mut Cursor<'_>) -> I<(Typed, Account)
     let authority = c.signer("authority")?;
     let rent = rt.idl_rent()?;
     let data = rt.idl_data(info)?; // initial borrow errors also unnamed.
-    if data[..8] != [0; 8] { return named(Err(code(2013)), "buffer"); }
+    if data[..8] != [0; 8] { return named(Err(code(ErrorCode::ConstraintZero)), "buffer"); }
     // Original holds the first immutable guard through the unchecked typed load.
     let buffer = named(typed(rt, info, false), "buffer")?;
     drop(data);
     writable(info, "buffer")?;
     let balance = rt.idl_lamports_panicking(info);
     let size = rt.idl_data(info)?.len();
-    require(balance >= rent.minimum_balance(size), 2005, "buffer")?;
+    require(balance >= rent.minimum_balance(size), ErrorCode::ConstraintRentExempt, "buffer")?;
     active_authority(authority)?;
     Ok((buffer, authority))
 }
@@ -228,11 +184,11 @@ fn admit_create<R: IdlRuntime>(rt: &mut R, c: &mut Cursor<'_>, program: &Key) ->
     let base = c.raw_named("base")?;
     let system = c.system(rt)?;
     let executable = c.raw_named("program")?;
-    require(from.signer, 2002, "from")?;
+    require(from.signer, ErrorCode::ConstraintSigner, "from")?;
     writable(to, "to")?;
     let (expected, _bump) = rt.find_program_address(&[], program);
-    require_keys(base.key, expected, 2006, "base")?;
-    require(rt.idl_executable(executable), 2007, "program")?;
+    require_keys(base.key, expected, ErrorCode::ConstraintSeeds, "base")?;
+    require(rt.idl_executable(executable), ErrorCode::ConstraintExecutable, "program")?;
     Ok((from, to, base, system, executable))
 }
 
@@ -243,26 +199,23 @@ fn write_header(data: &mut [u8], h: Header) -> I<()> {
     let serialize = || -> std::io::Result<()> {
         let mut writer = crate::generated_exit::bpf_writer::BpfWriter::new(data);
         writer.write_all(&DISC)?;
-        writer.write_all(&h.authority)?;
+        writer.write_all(h.authority.as_ref())?;
         writer.write_all(&h.data_len.to_le_bytes())
     };
     serialize().map_err(|error| {
         drop(error);
-        IdlError {
-            cause: Cause::Owned(crate::generated_exit::exit_error::account_did_not_serialize()),
-            account: None, keys: None, values: None, origin: None,
-        }
+        crate::generated_exit::exit_error::account_did_not_serialize()
     })
 }
 fn exit_header<R: IdlRuntime>(rt: &R, program: &Key, idl: &Typed, name: &'static str) -> I<()> {
     if *program != RELAY { return Ok(()); } // TYPE owner comparison, not live owner.
     if rt.idl_owner(idl.info) == SYSTEM && rt.idl_data(idl.info).unwrap().is_empty() { return Ok(()); }
-    named((|| { let mut bytes = rt.idl_data_mut(idl.info)?; write_header(&mut bytes, idl.value) })(), name)
+    named((|| { let mut bytes = rt.idl_data_mut(idl.info)?; write_header(&mut bytes, idl.value.clone()) })(), name)
 }
 fn create<R: IdlRuntime>(rt: &mut R, program: &Key, from: Account, to: Account,
     base_info: Account, system: Account, executable: Account, requested_payload: u64) -> I<()> {
     rt.log_instruction("Instruction: IdlCreateAccount");
-    if *program != executable.key { return Err(code(1001)); }
+    if *program != executable.key { return Err(code(ErrorCode::IdlInstructionInvalidProgram)); }
     let (base, bump) = rt.find_program_address(&[], program); // recomputed by171.
     let address = rt.idl_create_with_seed(&base, b"anchor:idl", &executable.key).unwrap();
     let requested = requested_payload.checked_add(44).expect("IDL create space overflow");
@@ -282,14 +235,14 @@ fn create<R: IdlRuntime>(rt: &mut R, program: &Key, from: Account, to: Account,
         Meta {key:base, writable:false, signer:true}], data };
     rt.idl_invoke_signed(ix, &[from,to,base_info,system], &[vec![vec![bump]]])?;
     let bytes = rt.idl_data(to)?;
-    let mut h = unchecked_header(&bytes)?; drop(bytes);
-    h.authority = from.key; // preserve decoded data_len; genuine new account is zeroed.
+    let mut h = unchecked_header(&mut &bytes[..])?; drop(bytes);
+    h.authority = solana_program::pubkey::Pubkey::new_from_array(from.key); // preserve decoded data_len; genuine new account is zeroed.
     let mut bytes = rt.idl_data_mut(to)?;
     write_header(&mut bytes, h) // W216 directly, no extra typed owner/closed gate.
 }
 fn resize<R: IdlRuntime>(rt: &mut R, idl: &Typed, authority: Account, _system: Account, requested_total: u64) -> I<()> {
     rt.log_instruction("Instruction: IdlResizeAccount");
-    if idl.value.data_len != 0 { return Err(code(1002)); }
+    if idl.value.data_len != 0 { return Err(code(ErrorCode::IdlAccountNotEmpty)); }
     let current = rt.idl_data(idl.info).unwrap().len();
     let second = rt.idl_data(idl.info).unwrap().len();
     let delta = requested_total.checked_sub(second as u64)
@@ -324,8 +277,7 @@ fn set_buffer<R: IdlRuntime>(rt: &mut R, buffer: &Typed, idl: &mut Typed) -> I<(
     let src_data = rt.idl_data(buffer.info).unwrap();
     let src = &src_data[HEADER..][..buffer.value.data_len as usize];
     let result = if dst.len() < src.len() {
-        let mut e = code(2506);
-        e.values = Some((dst.len() as u64, src.len() as u64)); Err(e)
+        Err(code(ErrorCode::RequireGteViolated).with_values((dst.len() as u64, src.len() as u64)))
     } else { dst[..src.len()].copy_from_slice(src); Ok(()) };
     drop(src_data); drop(dst_data); result
 }
@@ -353,7 +305,7 @@ pub fn dispatch170<R: IdlRuntime>(rt: &mut R, program: &Key, accounts: &[Account
         Instruction::CreateBuffer => {
             let (mut buffer,authority) = admit_buffer(rt,&mut c)?;
             rt.log_instruction("Instruction: IdlCreateBuffer");
-            buffer.value.authority = authority.key; // no forced data_len reset.
+            buffer.value.authority = solana_program::pubkey::Pubkey::new_from_array(authority.key); // no forced data_len reset.
             exit_header(rt,program,&buffer,"buffer")
         }
         Instruction::Write(bytes) => {
@@ -367,7 +319,7 @@ pub fn dispatch170<R: IdlRuntime>(rt: &mut R, program: &Key, accounts: &[Account
         }
         Instruction::SetAuthority(key) => {
             let mut idl = admit_write(rt,&mut c)?;
-            rt.log_instruction("Instruction: IdlSetAuthority"); idl.value.authority = key;
+            rt.log_instruction("Instruction: IdlSetAuthority"); idl.value.authority = solana_program::pubkey::Pubkey::new_from_array(key);
             exit_header(rt,program,&idl,"idl") // zero key is permitted (erases authority).
         }
         Instruction::Close => {

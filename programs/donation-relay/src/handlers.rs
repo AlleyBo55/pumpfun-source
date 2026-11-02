@@ -8,8 +8,12 @@ pub struct DonationContext<'a> {
  pub destination:Account,pub from:Account,pub token_program:Account,pub system:Account,
 }
 fn donation_shared(rt:&mut impl Runtime,c:&mut DonationContext,a:&DonationArgs)->R<(u128,u64,u64)> {
- require(a.message.len()<256,6009)?;
- require(a.tip_bps<=10000,6018)?;
+ if a.message.len() >= 256 {
+  return Err(Error::Owned(crate::generated_exit::exit_error::invalid_message_length()));
+ }
+ if a.tip_bps > 10000 {
+  return Err(Error::Owned(crate::generated_exit::exit_error::invalid_bps()));
+ }
  let owner=crate::generated_exit::AccountRuntime::owner(rt,&c.mint);
  require(owner==TOKEN || owner==TOKEN2022,6029)?;
  if c.mint.key!=NATIVE && c.mint.key!=NATIVE2022 && !c.whitelist.mints.contains(&c.mint.key) {
@@ -74,7 +78,7 @@ pub struct Settlement<'a> {pub source:&'a TokenView,pub mint:&'a MintView,pub pr
 fn distribution108(rt:&mut impl Runtime,s:&Settlement<'_>,d:&Distribution,shares:&[Share],recipients:&[Account],total:u64,expected_program:Key)->R<Vec<TransferReceipt>> {
  require(s.program.key==expected_program,6025)?;
  require(recipients.len()>=shares.len(),6030)?;
- let amounts=fair_amounts(total,&shares.iter().map(|share|share.bps).collect::<Vec<_>>()).map_err(Error::Owned)?; // admitted sum established by each caller
+ let amounts=fair_amounts(total,shares); // admitted sum established by each caller
  for (i,share) in shares.iter().enumerate() {
   let t=rt.token(recipients[i])?;
   require(t.authority==share.authority,6014)?;

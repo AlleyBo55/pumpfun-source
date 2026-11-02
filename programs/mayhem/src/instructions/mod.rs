@@ -13,3 +13,15 @@ pub mod pump_swap_types;
 pub mod buy_pump_swap;
 
 pub mod sell_pump_swap;
+
+pub mod pump_amm_interface;
+
+pub mod admin;
+
+pub mod fee_recipients;
+
+pub mod pump_interface;
+
+pub mod extend_account;
+
+pub mod pump_interface_v2;
